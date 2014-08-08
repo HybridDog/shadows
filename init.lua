@@ -1,4 +1,4 @@
-local range = 30
+--[[local range = 30
 
 local function get_corner(pos)
 	return {x=pos.x-pos.x%range, y=pos.y-pos.y%range, z=pos.z-pos.z%range}
@@ -145,7 +145,7 @@ minetest.register_globalstep(function()
 	end
 	update_chunks(clock, remove_shadows)
 	print(string.format("[shadows] calculated after ca. %.2fs", os.clock() - clock))
-end)
+end)]]
 
 --[[
 minetest.register_abm({
