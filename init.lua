@@ -1,4 +1,4 @@
---[[local range = 30
+local range = 30
 
 local function get_corner(pos)
 	return {x=pos.x-pos.x%range, y=pos.y-pos.y%range, z=pos.z-pos.z%range}
@@ -18,6 +18,20 @@ end
 local inv_nodes = {"air", "ignore", "shadows:shadow"}
 local ch_nodes = {"air", "shadows:shadow"}
 local shadowstep = 1
+
+local light_nodes
+local function get_light_nodes()
+	light_nodes = {}
+	for n,i in pairs(minetest.registered_nodes) do
+		local amount = i.light_source
+		if amount then
+			local light = amount-5
+			if light > 0 then
+				light_nodes[minetest.get_content_id(n)] = light
+			end
+		end
+	end
+end
 
 local function shadow_allowed(pos, nd)
 	if not table_contains(nd, ch_nodes) then
@@ -53,6 +67,10 @@ local c_ignore = minetest.get_content_id("ignore")
 local c_shadow
 
 local function update_chunk(p, remove_shadows)
+	if not light_nodes then
+		get_light_nodes()
+	end
+
 	local manip = minetest.get_voxel_manip()
 	local emerged_pos1, emerged_pos2 = manip:read_from_map(p, vector.add(p, mmrange))
 	local area = VoxelArea:new({MinEdge=emerged_pos1, MaxEdge=emerged_pos2})
@@ -65,18 +83,31 @@ local function update_chunk(p, remove_shadows)
 				local nd = minetest.get_node(pc).name
 				if shadow_allowed(pc, nd)
 				or remove_shadows then
-					local shh
-					if not remove_shadows then
-						shh = shadow_here(pc)
-					end
 					local p_pc = area:indexp(pc)
 					local d_p_pc = nodes[p_pc]
-					if shh then
+					if not remove_shadows
+					and shadow_here(pc) then
 						if d_p_pc == c_air then
 							nodes[p_pc] = c_shadow
 						end
 					elseif d_p_pc == c_shadow then
 						nodes[p_pc] = c_air
+					end
+				end
+			end
+		end
+	end
+
+	for k =p.z,p.z+mmrange do
+		for j = p.y,p.y+mmrange do
+			for i = p.x,p.x+mmrange do
+				local light = light_nodes[nodes[area:index(i,j,k)]]
+				if light then
+					for _,n in pairs(vector.explosion_table(light)) do
+						local p = area:index(n[1].x+i, n[1].y+j, n[1].z+k)
+						if nodes[p] == c_shadow then
+							nodes[p] = c_air
+						end
 					end
 				end
 			end
@@ -145,7 +176,7 @@ minetest.register_globalstep(function()
 	end
 	update_chunks(clock, remove_shadows)
 	print(string.format("[shadows] calculated after ca. %.2fs", os.clock() - clock))
-end)]]
+end)
 
 --[[
 minetest.register_abm({
