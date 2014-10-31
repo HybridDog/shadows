@@ -1,3 +1,8 @@
+if true then
+	return
+end
+-- ↑ remove these lines to enable the mod
+
 local range = 30
 
 local function get_corner(pos)
