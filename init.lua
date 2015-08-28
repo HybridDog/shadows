@@ -20,12 +20,13 @@ local function table_contains(v, t)
 	return false
 end
 
-local inv_nodes = {"air", "ignore", "shadows:shadow"}
-local ch_nodes = {"air", "shadows:shadow"}
+local invisible_nodes = {air = true, ignore = true, ["shadows:shadow"] = true}
 local shadowstep = 1
 
-local light_nodes
-local function get_light_nodes()
+local c_air, c_ignore, c_shadow
+
+local light_nodes, ch_nodes, unwanted_nexts
+local function load_nodes()
 	light_nodes = {}
 	for n,i in pairs(minetest.registered_nodes) do
 		local amount = i.light_source
@@ -36,19 +37,22 @@ local function get_light_nodes()
 			end
 		end
 	end
+	c_air = minetest.get_content_id("air")
+	c_ignore = minetest.get_content_id("ignore")
+	c_shadow = minetest.get_content_id("shadows:shadow")
+
+	ch_nodes = {[c_air] = true, [c_shadow] = true}
+	unwanted_nexts = {[c_air] = true, [c_ignore] = true, [c_shadow] = true}
 end
 
-local function shadow_allowed(pos, nd)
-	if not table_contains(nd, ch_nodes) then
-		return false
-	end
+local function seeable(x, y, z, data, area)
 	for j = -1,1,2 do
-		for _,i in ipairs({
-			{x=pos.x+j, y=pos.y, z=pos.z},
-			{x=pos.x, y=pos.y+j, z=pos.z},
-			{x=pos.x, y=pos.y, z=pos.z+j},
+		for _,i in pairs({
+			{x+j, y, z},
+			{x, y+j, z},
+			{x, y, z+j},
 		}) do
-			if not table_contains(minetest.get_node(i).name, inv_nodes) then
+			if not unwanted_nexts[data[area:index(i[1], i[2], i[3])]] then
 				return true
 			end
 		end
@@ -56,24 +60,66 @@ local function shadow_allowed(pos, nd)
 	return false
 end
 
+
+-- store known visible node positions in a table
+local hard_cache = {}
+local function get_hard(pos)
+	local hard = hard_cache[pos.z]
+	if hard then
+		hard = hard[pos.y]
+		if hard then
+			return hard[pos.x]
+		end
+	end
+end
+
+local function is_hard(pos)
+	local hard = get_hard(pos)
+	if hard ~= nil then
+		return hard
+	end
+	hard = not invisible_nodes[minetest.get_node(pos).name]
+	if hard_cache[pos.z] then
+		if hard_cache[pos.z][pos.y] then
+			hard_cache[pos.z][pos.y][pos.x] = hard
+			return
+		end
+		hard_cache[pos.z][pos.y] = {[pos.x] = hard}
+		return
+	end
+	hard_cache[pos.z] = {[pos.y] = {[pos.x] = hard}}
+	return hard
+end
+
+local function remove_hard(pos)
+	local hard = get_hard(pos)
+	if hard == nil then
+		return
+	end
+	hard_cache[pos.z][pos.y][pos.x] = nil
+	if not next(hard_cache[pos.z][pos.y]) then
+		hard_cache[pos.z][pos.y] = nil
+	end
+	if not next(hard_cache[pos.z]) then
+		hard_cache[pos.z] = nil
+	end
+end
+
+
 local cur_tab -- <— this must be defined here or earlier
 local function shadow_here(pos)
 	for _,i in ipairs(cur_tab) do
-		if not table_contains(minetest.get_node(vector.add(pos, i)).name, inv_nodes) then
+		if is_hard(vector.add(pos, i)) then
 			return true
 		end
 	end
 	return false
 end
 
-
-local c_air = minetest.get_content_id("air")
-local c_ignore = minetest.get_content_id("ignore")
-local c_shadow
-
 local function update_chunk(p, remove_shadows)
 	if not light_nodes then
-		get_light_nodes()
+		-- load nodes into cache
+		load_nodes()
 	end
 
 	local manip = minetest.get_voxel_manip()
@@ -81,39 +127,45 @@ local function update_chunk(p, remove_shadows)
 	local area = VoxelArea:new({MinEdge=emerged_pos1, MaxEdge=emerged_pos2})
 	local nodes = manip:get_data()
 
+	--
+	local light_sources,n = {},1
 	for k =p.z,p.z+mmrange do
 		for j = p.y,p.y+mmrange do
 			for i = p.x,p.x+mmrange do
-				local pc = {x=i, y=j, z=k}
-				local nd = minetest.get_node(pc).name
-				if shadow_allowed(pc, nd)
-				or remove_shadows then
-					local p_pc = area:indexp(pc)
-					local d_p_pc = nodes[p_pc]
-					if not remove_shadows
-					and shadow_here(pc) then
-						if d_p_pc == c_air then
+				local p_pc = area:index(i, j, k)
+				local d_p_pc = nodes[p_pc]
+				if remove_shadows then
+					if d_p_pc == c_shadow then
+						nodes[p_pc] = c_air
+					end
+				else
+					local light = light_nodes[d_p_pc]
+					if light then
+						light_sources[n] = {i,j,k, light}
+						n = n+1
+					elseif d_p_pc == c_shadow then
+						if not seeable(i, j, k, nodes, area)
+						or not shadow_here({x=i, y=j, z=k}) then
+							nodes[p_pc] = c_air
+						end
+					elseif d_p_pc == c_air then
+						if seeable(i, j, k, nodes, area)
+						and shadow_here({x=i, y=j, z=k}) then
 							nodes[p_pc] = c_shadow
 						end
-					elseif d_p_pc == c_shadow then
-						nodes[p_pc] = c_air
 					end
 				end
 			end
 		end
 	end
 
-	for k =p.z,p.z+mmrange do
-		for j = p.y,p.y+mmrange do
-			for i = p.x,p.x+mmrange do
-				local light = light_nodes[nodes[area:index(i,j,k)]]
-				if light then
-					for _,n in pairs(vector.explosion_table(light)) do
-						local p = area:index(n[1].x+i, n[1].y+j, n[1].z+k)
-						if nodes[p] == c_shadow then
-							nodes[p] = c_air
-						end
-					end
+	if n ~= 1 then
+		-- remove shadows near light
+		for _,t in pairs(light_sources) do
+			for _,n in pairs(vector.explosion_table(t[4])) do
+				local p = area:index(n[1].x+t[1], n[1].y+t[2], n[1].z+t[3])
+				if nodes[p] == c_shadow then
+					nodes[p] = c_air
 				end
 			end
 		end
@@ -182,41 +234,3 @@ minetest.register_globalstep(function()
 	update_chunks(clock, remove_shadows)
 	print(string.format("[shadows] calculated after ca. %.2fs", os.clock() - clock))
 end)
-
---[[
-minetest.register_abm({
-	nodenames = {"air"},
-	neighbors = {"default:dirt_with_grass", "default:dirt"},
-	interval = 2,
-	chance = 1,
-	action = function(pos)
-		local dir = vector.sun_dir(minetest.get_timeofday())
-		if not dir then
-			return
-		end
-		for _,i in ipairs(vector.line(pos, dir, 50)) do
-			if not table_contains(minetest.get_node(i).name, inv_nodes) then
-				minetest.set_node(pos, {name = "shadows:shadow"})
-				return
-			end
-		end
-	end,
-})
-
-minetest.register_abm({
-	nodenames = {"shadows:shadow"},
-	interval = 2,
-	chance = 1,
-	action = function(pos)
-		local dir = vector.sun_dir(minetest.get_timeofday())
-		if not dir then
-			return
-		end
-		for _,i in ipairs(vector.line(pos, dir, 50)) do
-			if not table_contains(minetest.get_node(i).name, inv_nodes) then
-				return
-			end
-		end
-		minetest.remove_node(pos)
-	end,
-})]]
