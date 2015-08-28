@@ -11,6 +11,7 @@ end
 
 local mmrange = range-1
 
+--[[
 local function table_contains(v, t)
 	for _,i in ipairs(t) do
 		if i==v then
@@ -18,14 +19,13 @@ local function table_contains(v, t)
 		end
 	end
 	return false
-end
+end--]]
 
 local invisible_nodes = {air = true, ignore = true, ["shadows:shadow"] = true}
 local shadowstep = 1
 
-local c_air, c_ignore, c_shadow
-
-local light_nodes, ch_nodes, unwanted_nexts
+-- loads information about nodes
+local light_nodes, ch_nodes, unwanted_nexts, c_air, c_ignore, c_shadow
 local function load_nodes()
 	light_nodes = {}
 	for n,i in pairs(minetest.registered_nodes) do
@@ -45,6 +45,7 @@ local function load_nodes()
 	unwanted_nexts = {[c_air] = true, [c_ignore] = true, [c_shadow] = true}
 end
 
+-- in this case the node is next to e.g. a wall or floor (or inside other nodes)
 local function seeable(x, y, z, data, area)
 	for j = -1,1,2 do
 		for _,i in pairs({
@@ -91,6 +92,7 @@ local function is_hard(pos)
 	return hard
 end
 
+--[[
 local function remove_hard(pos)
 	local hard = get_hard(pos)
 	if hard == nil then
@@ -103,10 +105,12 @@ local function remove_hard(pos)
 	if not next(hard_cache[pos.z]) then
 		hard_cache[pos.z] = nil
 	end
-end
+end--]]
 
 
 local cur_tab -- <— this must be defined here or earlier
+
+-- searches for visible nodes in the path to sun
 local function shadow_here(pos)
 	for _,i in ipairs(cur_tab) do
 		if is_hard(vector.add(pos, i)) then
@@ -116,6 +120,7 @@ local function shadow_here(pos)
 	return false
 end
 
+-- updates shadow nodes in a cube of nodes via vmanip
 local function update_chunk(p, remove_shadows)
 	if not light_nodes then
 		-- load nodes into cache
@@ -127,7 +132,7 @@ local function update_chunk(p, remove_shadows)
 	local area = VoxelArea:new({MinEdge=emerged_pos1, MaxEdge=emerged_pos2})
 	local nodes = manip:get_data()
 
-	--
+	-- loop through the cube
 	local light_sources,n = {},1
 	for k =p.z,p.z+mmrange do
 		for j = p.y,p.y+mmrange do
@@ -135,12 +140,14 @@ local function update_chunk(p, remove_shadows)
 				local p_pc = area:index(i, j, k)
 				local d_p_pc = nodes[p_pc]
 				if remove_shadows then
+					-- moon currently doesn't make shadow
 					if d_p_pc == c_shadow then
 						nodes[p_pc] = c_air
 					end
 				else
 					local light = light_nodes[d_p_pc]
 					if light then
+						-- something lighting found
 						light_sources[n] = {i,j,k, light}
 						n = n+1
 					elseif d_p_pc == c_shadow then
@@ -160,7 +167,7 @@ local function update_chunk(p, remove_shadows)
 	end
 
 	if n ~= 1 then
-		-- remove shadows near light
+		-- remove shadows near light sources
 		for _,t in pairs(light_sources) do
 			for _,n in pairs(vector.explosion_table(t[4])) do
 				local p = area:index(n[1].x+t[1], n[1].y+t[2], n[1].z+t[3])
@@ -176,6 +183,7 @@ local function update_chunk(p, remove_shadows)
 	manip:update_map()
 end
 
+-- should be similar to air
 minetest.register_node("shadows:shadow", {
 	drawtype = "airlike",
 	sunlight_propagates = true,
@@ -184,7 +192,6 @@ minetest.register_node("shadows:shadow", {
 	buildable_to = true,
 	drop = ""
 })
-
 c_shadow = minetest.get_content_id("shadows:shadow")
 
 
