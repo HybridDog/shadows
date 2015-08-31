@@ -65,13 +65,7 @@ end
 -- store known visible node positions in a table
 local hard_cache = {}
 local function get_hard(pos)
-	local hard = hard_cache[pos.z]
-	if hard then
-		hard = hard[pos.y]
-		if hard then
-			return hard[pos.x]
-		end
-	end
+	return vector.get_data_from_pos(hard_cache, vector.unpack(pos))
 end
 
 local function is_hard(pos)
@@ -80,31 +74,13 @@ local function is_hard(pos)
 		return hard
 	end
 	hard = not invisible_nodes[minetest.get_node(pos).name]
-	if hard_cache[pos.z] then
-		if hard_cache[pos.z][pos.y] then
-			hard_cache[pos.z][pos.y][pos.x] = hard
-			return
-		end
-		hard_cache[pos.z][pos.y] = {[pos.x] = hard}
-		return
-	end
-	hard_cache[pos.z] = {[pos.y] = {[pos.x] = hard}}
+	vector.set_data_to_pos(hard_cache, vector.unpack(pos), hard)
 	return hard
 end
 
 --[[
 local function remove_hard(pos)
-	local hard = get_hard(pos)
-	if hard == nil then
-		return
-	end
-	hard_cache[pos.z][pos.y][pos.x] = nil
-	if not next(hard_cache[pos.z][pos.y]) then
-		hard_cache[pos.z][pos.y] = nil
-	end
-	if not next(hard_cache[pos.z]) then
-		hard_cache[pos.z] = nil
-	end
+	vector.remove_data_from_pos(hard_cache, vector.unpack(pos))
 end--]]
 
 
