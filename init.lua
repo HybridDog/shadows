@@ -62,26 +62,20 @@ local function seeable(x, y, z, data, area)
 end
 
 
+local get = vector.get_data_from_pos
+local set = vector.set_data_to_pos
+
 -- store known visible node positions in a table
 local hard_cache = {}
-local function get_hard(pos)
-	return vector.get_data_from_pos(hard_cache, vector.unpack(pos))
-end
-
 local function is_hard(pos)
-	local hard = get_hard(pos)
+	local hard = get(hard_cache, pos.z,pos.y,pos.x)
 	if hard ~= nil then
 		return hard
 	end
 	hard = not invisible_nodes[minetest.get_node(pos).name]
-	vector.set_data_to_pos(hard_cache, vector.unpack(pos), hard)
+	set(hard_cache, pos.z,pos.y,pos.x, hard)
 	return hard
 end
-
---[[
-local function remove_hard(pos)
-	vector.remove_data_from_pos(hard_cache, vector.unpack(pos))
-end--]]
 
 
 local cur_tab -- <— this must be defined here or earlier
@@ -197,6 +191,7 @@ local function update_chunks(clock, remove_shadows)
 			end
 		end
 	end
+	hard_cache = {}
 end
 
 local shtime = tonumber(os.clock())+5
