@@ -1,7 +1,4 @@
-if true then
-	return
-end
--- ↑ remove these lines to enable the mod
+-- this version uses a node to simulate shadows
 
 local range = 30
 
