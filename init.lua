@@ -1,214 +1,162 @@
-if true then
-	return
+-- range of blocks updated next to the player's block (used for mapchunk size)
+local block_range = 3
+
+-- distance the nodes can cause shadows
+local ray_length = 50
+
+-- mapchunk update interval in gametime seconds
+--~ local update_interval = 600
+local update_interval = 1
+
+-- shadow update test interval in seconds
+local gstep_interval = 1
+
+-- give brightness to shadows
+local shadowlight = 6
+
+
+-- returns the chunk position of the block containing pos
+local chunkfactor = 1 / (block_range * 16)
+local function get_chunkpos(pos)
+	return {
+		x = math.floor(pos.x * chunkfactor),
+		y = math.floor(pos.y * chunkfactor),
+		z = math.floor(pos.z * chunkfactor),
+	}
 end
--- ↑ remove these lines to enable the mod
 
-local range = 30
-
-local function get_corner(pos)
-	return {x=pos.x-pos.x%range, y=pos.y-pos.y%range, z=pos.z-pos.z%range}
+-- a hash function for mapblock positions
+local function mpos_shash(mpos)
+	return mpos.z * 0x1000000
+		+ mpos.y * 0x1000
+		+ mpos.x
 end
 
-local mmrange = range-1
-
---[[
-local function table_contains(v, t)
-	for _,i in ipairs(t) do
-		if i==v then
-			return true
-		end
+-- tells whether the node can carry light
+local lightables = {}
+local function is_lightable(id)
+	if lightables[id] ~= nil then
+		return lightables[id]
 	end
-	return false
-end--]]
-
-local invisible_nodes = {air = true, ignore = true, ["shadows:shadow"] = true}
-local shadowstep = 1
-
--- loads information about nodes
-local light_nodes, ch_nodes, unwanted_nexts, c_air, c_ignore, c_shadow
-local function load_nodes()
-	light_nodes = {}
-	for n,i in pairs(minetest.registered_nodes) do
-		local amount = i.light_source
-		if amount then
-			local light = amount-5
-			if light > 0 then
-				light_nodes[minetest.get_content_id(n)] = light
-			end
-		end
-	end
-	c_air = minetest.get_content_id("air")
-	c_ignore = minetest.get_content_id("ignore")
-	c_shadow = minetest.get_content_id("shadows:shadow")
-
-	ch_nodes = {[c_air] = true, [c_shadow] = true}
-	unwanted_nexts = {[c_air] = true, [c_ignore] = true, [c_shadow] = true}
+	local def = minetest.registered_nodes[minetest.get_name_from_content_id(id)]
+	lightables[id] = def and def.paramtype == "light"
+	return lightables[id]
 end
 
--- in this case the node is next to e.g. a wall or floor (or inside other nodes)
-local function seeable(x, y, z, data, area)
-	for j = -1,1,2 do
-		for _,i in pairs({
-			{x+j, y, z},
-			{x, y+j, z},
-			{x, y, z+j},
-		}) do
-			if not unwanted_nexts[data[area:index(i[1], i[2], i[3])]] then
-				return true
-			end
-		end
-	end
-	return false
+-- tells whether the node's param1 matters
+local function seeable(vi, nodes, area)
+	return is_lightable(nodes[vi])
+		and not (
+			is_lightable(nodes[vi + 1])
+			and is_lightable(nodes[vi - 1])
+			and is_lightable(nodes[vi + area.ystride])
+			and is_lightable(nodes[vi - area.ystride])
+			and is_lightable(nodes[vi + area.zstride])
+			and is_lightable(nodes[vi - area.zstride])
+		)
 end
 
-
-local get = vector.get_data_from_pos
-local set = vector.set_data_to_pos
-
--- store known visible node positions in a table
-local hard_cache = {}
-local function is_hard(pos)
-	local hard = get(hard_cache, pos.z,pos.y,pos.x)
-	if hard ~= nil then
-		return hard
+-- tells whether the node lets light pass
+local light_propagaters = {[minetest.get_content_id"ignore"] = true}
+local function propagates_light(id)
+	if light_propagaters[id] ~= nil then
+		return light_propagaters[id]
 	end
-	hard = not invisible_nodes[minetest.get_node(pos).name]
-	set(hard_cache, pos.z,pos.y,pos.x, hard)
-	return hard
+	local def = minetest.registered_nodes[minetest.get_name_from_content_id(id)]
+	light_propagaters[id] = def and def.sunlight_propagates
+	return light_propagaters[id]
 end
 
+local cur_tab
 
-local cur_tab -- <— this must be defined here or earlier
-
--- searches for visible nodes in the path to sun
-local function shadow_here(pos)
+-- searches for light blocking nodes in the path to sun
+local function shadow_here(pos, nodes, area)
 	for _,i in ipairs(cur_tab) do
-		if is_hard(vector.add(pos, i)) then
+		local p = vector.add(pos, i)
+		if not area:containsp(p) then
+			return false
+		end
+		if not propagates_light(nodes[area:indexp(p)]) then
 			return true
 		end
 	end
 	return false
 end
 
--- updates shadow nodes in a cube of nodes via vmanip
-local function update_chunk(p, remove_shadows)
-	if not light_nodes then
-		-- load nodes into cache
-		load_nodes()
-	end
+local nodes = {}
 
+-- updates shadows in the given mapchunks
+local function update_chunk(mpos_min, mpos_max)
 	local manip = minetest.get_voxel_manip()
-	local emerged_pos1, emerged_pos2 = manip:read_from_map(p, vector.add(p, mmrange))
-	local area = VoxelArea:new({MinEdge=emerged_pos1, MaxEdge=emerged_pos2})
-	local nodes = manip:get_data()
+	local minp = vector.multiply(mpos_min, 16)
+	local maxp = vector.add(vector.multiply(mpos_max, 16), 15)
+	local emin,emax = manip:read_from_map(
+		vector.add(minp, -16),
+		vector.add(maxp, 16)
+	)
+	local area = VoxelArea:new{MinEdge=emin, MaxEdge=emax}
+	local param1s = manip:get_light_data()
+	manip:get_data(nodes)
 
 	-- loop through the cube
-	local light_sources,n = {},1
-	for k =p.z,p.z+mmrange do
-		for j = p.y,p.y+mmrange do
-			for i = p.x,p.x+mmrange do
-				local p_pc = area:index(i, j, k)
-				local d_p_pc = nodes[p_pc]
-				if remove_shadows then
-					-- moon currently doesn't make shadow
-					if d_p_pc == c_shadow then
-						nodes[p_pc] = c_air
-					end
-				else
-					local light = light_nodes[d_p_pc]
-					if light then
-						-- something lighting found
-						light_sources[n] = {i,j,k, light}
-						n = n+1
-					elseif d_p_pc == c_shadow then
-						if not seeable(i, j, k, nodes, area)
-						or not shadow_here({x=i, y=j, z=k}) then
-							nodes[p_pc] = c_air
-						end
-					elseif d_p_pc == c_air then
-						if seeable(i, j, k, nodes, area)
-						and shadow_here({x=i, y=j, z=k}) then
-							nodes[p_pc] = c_shadow
-						end
+	for z = minp.z, maxp.z do
+		for y = minp.y, maxp.y do
+			local vi = area:index(minp.x, y, z)
+			for x = minp.x, maxp.x do
+				-- test whether the node matters
+				if seeable(vi, nodes, area) then
+					-- remove current daylight
+					param1s[vi] = param1s[vi] - (param1s[vi] % 16)
+					if not shadow_here({x=x, y=y, z=z}, nodes, area) then
+						-- set it to 15 if there's no shadow
+						param1s[vi] = param1s[vi] + 15
+					else
+						param1s[vi] = param1s[vi] + shadowlight
 					end
 				end
+				vi = vi+1
 			end
 		end
 	end
 
-	if n ~= 1 then
-		-- remove shadows near light sources
-		for _,t in pairs(light_sources) do
-			for _,n in pairs(vector.explosion_table(t[4])) do
-				local p = area:index(n[1].x+t[1], n[1].y+t[2], n[1].z+t[3])
-				if nodes[p] == c_shadow then
-					nodes[p] = c_air
-				end
-			end
-		end
-	end
-
-	manip:set_data(nodes)
-	manip:write_to_map()
-	manip:update_map()
+	manip:set_light_data(param1s)
+	manip:write_to_map(false)
 end
 
--- should be similar to air
-minetest.register_node("shadows:shadow", {
-	drawtype = "airlike",
-	sunlight_propagates = true,
-	walkable = false,
-	pointable = false,
-	buildable_to = true,
-	drop = ""
-})
-c_shadow = minetest.get_content_id("shadows:shadow")
-
-
+-- updates the mapblocks around each player
 local chunk_times = {}
-
-local function update_chunks(clock, remove_shadows)
+local function update_chunks()
+	local gametime = minetest.get_gametime()
 	for _,player in ipairs(minetest.get_connected_players()) do
-		local pos = vector.round(player:getpos())
-		if not pos then
-			return
-		end
-		for a = -10,10,20 do
-			for _,p in ipairs({
-				{x=pos.x, y=pos.y, z=pos.z+a},
-				{x=pos.x, y=pos.y+a, z=pos.z},
-				{x=pos.x+a, y=pos.y, z=pos.z},
-			}) do
-				p = get_corner(p)
-				local pstring = p.z.." "..p.y.." "..p.x
-				local last_time = chunk_times[pstring]
-				if not last_time
-				or clock >= last_time+30 then
-					update_chunk(p, remove_shadows)
-					chunk_times[pstring] = clock
-					minetest.chat_send_all(pstring)
-				end
-			end
+		local cpos_min = get_chunkpos(player:getpos())
+		local chash = mpos_shash(cpos_min)
+		if not chunk_times[chash]
+		or gametime - chunk_times[chash] >= update_interval then
+			chunk_times[chash] = gametime
+			local mpos_min = vector.multiply(cpos_min, block_range)
+			local mpos_max = vector.add(mpos_min, block_range-1)
+			update_chunk(mpos_min, mpos_max)
+			minetest.chat_send_all(minetest.pos_to_string(mpos_min))
 		end
 	end
-	hard_cache = {}
 end
 
-local shtime = tonumber(os.clock())+5
-minetest.register_globalstep(function()
-	local clock = tonumber(os.clock())
-	local delay = clock-shtime
-	if delay < shadowstep then
+local time = 0
+minetest.register_globalstep(function(dtime)
+	time = time + dtime
+	if time < gstep_interval then
 		return
 	end
-	shtime = clock
+	time = 0
+
+	local t0 = minetest.get_us_time()
 	local dir = vector.sun_dir(minetest.get_timeofday())
-	local remove_shadows
 	if not dir then
-		remove_shadows = true
-	else
-		cur_tab = vector.line(vector.zero, dir, 50)
+		-- TODO: moon shadows
+		return
 	end
-	update_chunks(clock, remove_shadows)
-	print(string.format("[shadows] calculated after ca. %.2fs", os.clock() - clock))
+	cur_tab = vector.line(vector.zero, dir, ray_length)
+	update_chunks()
+	minetest.chat_send_all("[shadows] calculated after ca. " ..
+		math.floor((minetest.get_us_time() - t0) / 10000 + 0.5) / 100 .. " s")
 end)
