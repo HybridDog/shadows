@@ -12,7 +12,7 @@ local update_interval = 1
 local gstep_interval = 1
 
 -- give brightness to shadows
-local shadowlight = 6
+local shadowlight = 5
 
 
 -- returns the chunk position of the block containing pos
